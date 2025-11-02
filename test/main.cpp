@@ -2,7 +2,9 @@
 #include <iostream>
 
 int main() {
-	HttpServer app("192.168.1.45", 80);
+	using namespace axis;
+
+	AxisServer app("192.168.1.45", 80);
 
 	app.set_allow_methods({ HTTP::Method::GET, HTTP::Method::POST });
 
@@ -16,10 +18,14 @@ int main() {
 
 	app("/login", [](Request& r) -> Response {
 		if (r.method == HTTP::Method::GET) {
-			return HttpServer::file("src\\test\\page_login.html");
+			return send_file("src\\test\\page_login.html");
 		}
 		else {
-			return r.data;
+			auto p = parse_parameter(r.data);
+
+			__debugbreak();
+
+			return redirect_to("/account");
 		}
 	});
 

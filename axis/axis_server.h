@@ -18,105 +18,109 @@
 #include <initializer_list>
 #include <set>
 
-class HttpServer;
+namespace axis {
 
-class Request {
-public:
-	Request(const std::string& _RawText);
+	class AxisServer;
 
-	HTTP::Method method;
-	std::string protocol_version;
-	std::string path;
-	std::map<std::string, std::string> headers;
-	
-	std::string raw_text, data;
-};
+	class Request {
+	public:
+		Request(const std::string& _RawText);
 
-class Response {
-	friend class HttpServer;
+		HTTP::Method method;
+		std::string protocol_version;
+		std::string path;
+		std::map<std::string, std::string> headers;
 
-private:
-	Response();
+		std::string raw_text, data;
+	};
 
-	void fill_std_response();
-	std::string make_src();
+	class Response {
+		friend class AxisServer;
 
-public:
-	std::string protocol_version;
-	HTTP::Status status;
-	std::string data;
-	std::map<std::string, std::string> headers;
+	private:
+		Response();
 
-	Response(const char* _Text);
+		void fill_std_response();
+		std::string make_src() const;
 
-	Response(const std::ifstream& _File);
-	Response(const std::string& _Text);
-	Response(const std::string& _Text, HTTP::Status _Status);
-};
+	public:
+		std::string protocol_version;
+		HTTP::Status status;
+		std::string data;
+		std::map<std::string, std::string> headers;
 
-typedef Response(*RefCallback)(Request&);
-typedef Response(*RefCallbackAdv)(Request&, const std::vector<std::string>&);
+		Response(const char* _Text);
 
-class ClientInfo {
-public:
-	std::thread* thread;
-	SOCKET* socket;
-};
+		Response(const std::string& _Text);
+		Response(const std::string& _Text, HTTP::Status _Status);
+	};
 
-class PathMask {
-public:
-	static inline bool mask(const std::string& _Path) { return true; }
-};
+	typedef Response(*RefCallback)(Request&);
+	typedef Response(*RefCallbackAdv)(Request&, const std::vector<std::string>&);
 
-class HttpServer {
-private:
-	std::string m_IP;
-	unsigned short m_Port;
+	class ClientInfo {
+	public:
+		std::thread* thread;
+		SOCKET* socket;
+	};
 
-	SOCKET m_ServerSocket;
-	SOCKADDR_IN m_SockAddrIn;
+	class PathMask {
+	public:
+		static inline bool mask(const std::string& _Path) { return true; }
+	};
 
-	std::mutex m_DataMutex;
-	std::map<std::string, RefCallback> m_PathMap;
-	std::map<std::string, RefCallbackAdv> m_PathMapAdv;
-	RefCallbackAdv m_NotFoundCallback;
-	RefCallback m_MethodNotAllowedCallback;
+	class AxisServer {
+	private:
+		std::string m_IP;
+		unsigned short m_Port;
 
-	std::string m_CriticalError;
-	bool m_Run;
+		SOCKET m_ServerSocket;
+		SOCKADDR_IN m_SockAddrIn;
 
-	size_t m_MaxClients = 10, m_ClientCounter = 0;
-	ClientInfo* m_Clients[10];
+		std::mutex m_DataMutex;
+		std::map<std::string, RefCallback> m_PathMap;
+		std::map<std::string, RefCallbackAdv> m_PathMapAdv;
+		RefCallbackAdv m_NotFoundCallback;
+		RefCallback m_MethodNotAllowedCallback;
 
-	std::set<HTTP::Method> m_AllowMethods;
+		std::string m_CriticalError;
+		bool m_Run;
 
-public:
-	HttpServer(const std::string& _IP, unsigned short _Port);
+		size_t m_MaxClients = 10, m_ClientCounter = 0;
+		ClientInfo* m_Clients[10];
 
-	void operator ()(const std::string& _Path, const RefCallback& _Callback);
+		std::set<HTTP::Method> m_AllowMethods;
 
-	void operator ()(const std::string& _Path, const RefCallbackAdv& _Callback);
+	public:
+		AxisServer(const std::string& _IP, unsigned short _Port);
 
-	void set_not_found_callback(RefCallbackAdv& _Callback);
-	void set_method_not_allowed_callback(RefCallback& _Callback);
+		void operator ()(const std::string& _Path, const RefCallback& _Callback);
 
-	bool set_allow_methods(const std::initializer_list<HTTP::Method>& _MehodList);
+		void operator ()(const std::string& _Path, const RefCallbackAdv& _Callback);
 
-	static std::string file(std::string _FileName);
-	// static std::vector<std::pair<std::string, std::string>> parse_user_data();
+		void set_not_found_callback(RefCallbackAdv& _Callback);
+		void set_method_not_allowed_callback(RefCallback& _Callback);
 
-	int run();
+		bool set_allow_methods(const std::initializer_list<HTTP::Method>& _MehodList);
 
-private:
-	void accept();
-	void dispatcher(SOCKET* _ClientSocket);
+		// static std::vector<std::pair<std::string, std::string>> parse_user_data();
 
-	Request receive(SOCKET _ClientSocket);
-	bool make_response(SOCKET _ClientSocket, Response& _Response);
+		int run();
 
-	bool init_server(const std::string& _IP, unsigned short _Port);
+	private:
+		void accept();
+		void dispatcher(SOCKET* _ClientSocket);
 
-};
+		Request receive(SOCKET _ClientSocket);
+		bool make_response(SOCKET _ClientSocket, const Response& _Response);
 
+		bool init_server(const std::string& _IP, unsigned short _Port);
+	};
+
+	Response redirect_to(const std::string& _To);
+	Response send_file(const std::string& _FileName);
+	std::vector<std::pair<std::string, std::string>> parse_parameter(const std::string& _ParametersRaw);
+
+}
 
 #endif // !__AXIS_SERVER_H__
