@@ -16,12 +16,10 @@ int main() {
 
 	app("/login", [](Request& r) -> Response {
 		if (r.method == HTTP::Method::GET) {
-			return HttpServer::file(L"C:\\Users\\Гео\\source\\repos\\SHTTPL\\SHTTPL\\src\\test\\page_login.html");
+			return HttpServer::file("src\\test\\page_login.html");
 		}
 		else {
-			__debugbreak();
-
-			return "HTTP::Method::POST";
+			return r.data;
 		}
 	});
 

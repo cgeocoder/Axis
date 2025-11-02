@@ -102,7 +102,8 @@ public:
 
 	bool set_allow_methods(const std::initializer_list<HTTP::Method>& _MehodList);
 
-	static std::string file(std::wstring _FileName);
+	static std::string file(std::string _FileName);
+	// static std::vector<std::pair<std::string, std::string>> parse_user_data();
 
 	int run();
 

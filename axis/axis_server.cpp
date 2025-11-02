@@ -164,10 +164,14 @@ void HttpServer::dispatcher(SOCKET* _ClientSocket) {
 	while (client_run) {
 		Request req = receive(*_ClientSocket);
 
+		__debugbreak();
+
 		if (m_AllowMethods.find(req.method) == m_AllowMethods.end()) {
 			m_DataMutex.lock();
 
 			Response response = m_MethodNotAllowedCallback(req);
+
+			__debugbreak();
 
 			if (!make_response(*_ClientSocket, response)) {
 				l.err(__FUNCTION__ "(): [s: %llu] make_response() failed", *_ClientSocket);
@@ -329,7 +333,7 @@ int HttpServer::run() {
 	return 0;
 }
 
-std::string HttpServer::file(std::wstring _FileName) {
+std::string HttpServer::file(std::string _FileName) {
 	std::string file_text, line;
 
 	std::ifstream file{ _FileName };
@@ -374,6 +378,10 @@ Response::Response(const std::string& _Text) {
 
 Response::Response(const std::string& _Text, HTTP::Status _Status) {
 	fill_std_response();
+
+	status = _Status;
+	headers["Content-Length"] = std::to_string(_Text.length());
+	data = _Text;
 }
 
 void Response::fill_std_response() {
