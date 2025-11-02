@@ -1,9 +1,12 @@
 #define GLOBAL_LOGGER
 
 #include <array>
+#include <fstream>
 
 #include "axis_server.h"
 #include "logger/log.h"
+
+#undef DELETE
 
 HttpServer::HttpServer(const std::string& _IP, unsigned short _Port) 
 	: m_Run { true },
@@ -17,6 +20,14 @@ HttpServer::HttpServer(const std::string& _IP, unsigned short _Port)
 
 		return;
 	}
+}
+
+Response default_not_fount_callback(Request& r, const std::vector<std::string>& p) {
+	return { "Not Found", HTTP::Status::NotFound };
+}
+
+Response default_method_not_allowed_callback(Request& r) {
+	return { "Method not allowed", HTTP::Status::MethodNotAllowed };
 }
 
 bool HttpServer::init_server(const std::string& _IP, unsigned short _Port) {
@@ -46,8 +57,33 @@ bool HttpServer::init_server(const std::string& _IP, unsigned short _Port) {
 		return false;
 	}
 	
-	m_NotFoundCallback = nullptr;
+	m_NotFoundCallback = ::default_not_fount_callback;
+	m_MethodNotAllowedCallback = ::default_method_not_allowed_callback;
+
+	m_AllowMethods = {
+		HTTP::Method::GET,
+		HTTP::Method::HEAD,
+		HTTP::Method::POST,
+		HTTP::Method::PUT,
+		HTTP::Method::DELETE,
+		HTTP::Method::CONNECT,
+		HTTP::Method::OPTIONS,
+		HTTP::Method::TRACE,
+		HTTP::Method::PATCH
+	};
 	
+	return true;
+}
+
+bool HttpServer::set_allow_methods(const std::initializer_list<HTTP::Method>& _MehodList) {
+	for (auto& method : _MehodList) {
+		if (method < HTTP::Method::GET || method > HTTP::Method::PATCH)
+			return false;
+	}
+
+	m_AllowMethods.clear();
+	m_AllowMethods = _MehodList;
+
 	return true;
 }
 
@@ -67,78 +103,116 @@ void HttpServer::operator ()(const std::string& _Path, const RefCallbackAdv& _Ca
 	m_PathMapAdv[_Path] = _Callback;
 }
 
-Response HttpServer::default_not_fount_callback(Request& r) { 
-	return "Not Found"; 
+void HttpServer::set_not_found_callback(RefCallbackAdv& _Callback) {
+	m_NotFoundCallback = _Callback;
 }
 
-void HttpServer::if_not_found(const RefCallbackAdv& _Callback) {
-	m_NotFoundCallback = _Callback;
+void HttpServer::set_method_not_allowed_callback(RefCallback& _Callback) {
+	m_MethodNotAllowedCallback = _Callback;
 }
 
 void HttpServer::accept() {
 	clog::Log& l = clog::l();
 
 	int sizeofaddr = sizeof(m_SockAddrIn);
-	SOCKET new_client = ::accept(m_ServerSocket, (SOCKADDR*)&m_SockAddrIn, &sizeofaddr);
+	SOCKET* new_client = new SOCKET{ ::accept(m_ServerSocket, (SOCKADDR*)&m_SockAddrIn, &sizeofaddr) };
 
-	if (new_client == 0) {
+	if (*new_client == 0) {
 		l.err(__FUNCTION__ "(): accept() failed: client could not connect to the server");
 	}
 	else {
-		l.info(__FUNCTION__ "(): [s: %llu] accept(): client connected", new_client);
+		l.info(__FUNCTION__ "(): [s: %llu] accept(): client connected", *new_client);
 
-		ClientInfo ci{
-			new std::thread{ std::thread(&HttpServer::dispatcher, this, new_client) },
-			new_client
+		auto create_client_thread = [&]() -> ClientInfo* {
+			return new ClientInfo{
+				new std::thread{ std::thread(&HttpServer::dispatcher, this, new_client) },
+				new_client
+			};
 		};
 
-		m_Clients.push_back(ci);
+		for (size_t i = 0; i < m_ClientCounter; ++i) {
+			if (*m_Clients[i]->socket == 0) {
+				m_Clients[i]->thread->detach();
+
+				delete m_Clients[i]->thread;
+				delete m_Clients[i]->socket;
+				delete m_Clients[i];
+
+				m_Clients[i] = create_client_thread();
+				return;
+			}
+		}
+
+		if (m_ClientCounter == m_MaxClients) {
+			Response response = Response("<h1>The server cannot process your request because the maximum number of connections has been exceeded</h1>");
+			make_response(*new_client, response);
+			closesocket(*new_client);
+		}
+		else {
+			m_Clients[m_ClientCounter++] = create_client_thread();
+		}
 	}
 }
 
-void HttpServer::dispatcher(SOCKET _ClientSocket) {
+void HttpServer::dispatcher(SOCKET* _ClientSocket) {
 	clog::Log& l = clog::l();
 
-	l.info(__FUNCTION__ "(): [s: %llu] start", _ClientSocket);
+	l.info(__FUNCTION__ "(): [s: %llu] start", *_ClientSocket);
 
 	bool client_run = true;
 
 	while (client_run) {
-		Request req = receive(_ClientSocket);
+		Request req = receive(*_ClientSocket);
 
-		auto& req_headers = req.headers;
+		if (m_AllowMethods.find(req.method) == m_AllowMethods.end()) {
+			m_DataMutex.lock();
 
-		if ((req_headers.find("Connection") != req_headers.end()) && (req_headers["Connection"] == "Closed")) {
-			client_run = false;
-		}
+			Response response = m_MethodNotAllowedCallback(req);
 
-		l.info(__FUNCTION__ "(): [s: %llu] required '%s'", _ClientSocket, req.path.c_str());
+			if (!make_response(*_ClientSocket, response)) {
+				l.err(__FUNCTION__ "(): [s: %llu] make_response() failed", *_ClientSocket);
+			}
 
-		m_DataMutex.lock();
-
-		Response response;
-
-		if (m_PathMap.find(req.path) != m_PathMap.end()) {
-			response = m_PathMap[req.path](req);
+			m_DataMutex.unlock();
 		}
 		else {
-			response = Response("Not found");
+			auto& req_headers = req.headers;
+
+			if ((req_headers.find("Connection") != req_headers.end()) && (req_headers["Connection"] == "Closed")) {
+				client_run = false;
+			}
+
+			l.info(__FUNCTION__ "(): [s: %llu] required '%s'", *_ClientSocket, req.path.c_str());
+
+			m_DataMutex.lock();
+
+			Response response;
+
+			if (m_PathMap.find(req.path) != m_PathMap.end()) {
+				response = m_PathMap[req.path](req);
+			}
+			else {
+				response = Response("Not found");
+			}
+
+			auto& resp_headers = response.headers;
+
+			if ((resp_headers.find("Connection") != resp_headers.end()) && (resp_headers["Connection"] == "Closed")) {
+				client_run = false;
+			}
+
+			if (!make_response(*_ClientSocket, response)) {
+				l.err(__FUNCTION__ "(): [s: %llu] make_response() failed", *_ClientSocket);
+			}
+
+			m_DataMutex.unlock();
 		}
-
-		auto& resp_headers = response.headers;
-
-		if ((resp_headers.find("Connection") != resp_headers.end()) && (resp_headers["Connection"] == "Closed")) {
-			client_run = false;
-		}
-
-		if (!make_response(_ClientSocket, response)) {
-			l.err(__FUNCTION__ "(): [s: %llu] make_response() failed", _ClientSocket);
-		}
-
-		m_DataMutex.unlock();
 	}
 
-	l.info(__FUNCTION__ "(): [s: %llu] end. Client disconnected", _ClientSocket);
+	l.info(__FUNCTION__ "(): [s: %llu] end. Client disconnected", *_ClientSocket);
+
+	::closesocket(*_ClientSocket);
+	*_ClientSocket = 0;
 }
 
 bool HttpServer::make_response(SOCKET _ClientSocket, Response& _Response) {
@@ -194,8 +268,8 @@ Request HttpServer::receive(SOCKET _ClientSocket) {
 	}
 
 	std::string str_method = line.substr(0, spaces[0]);
-	
-	const char* methods[9] = {"GET", "HEAD", "POST", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH"};
+
+	const char* methods[9] = { "GET", "HEAD", "POST", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH" };
 
 	for (size_t i = 0; i < 9; ++i) {
 		if (str_method == methods[i]) {
@@ -224,6 +298,23 @@ Request HttpServer::receive(SOCKET _ClientSocket) {
 		_Result.headers[line.substr(0, div_seq)] = line.substr(div_seq + 2, line.length() - div_seq - 4);
 	}
 
+	if (_Result.headers.find("Content-Length") != _Result.headers.end()) {
+		size_t content_length = std::stoull(_Result.headers["Content-Length"]);
+
+		char* _data = new char[content_length + 1];
+
+		if (recv(_ClientSocket, _data, content_length * sizeof(char), 0) < 0) {
+			l.err(__FUNCTION__"(): recv() failed. Close socket (%llu)", _ClientSocket);
+			return Request("");
+		}
+
+		_data[content_length] = 0;
+		_Result.data = _data;
+		_Result.raw_text.append(_Result.data);
+
+		delete[] _data;
+	}
+
 	return _Result;
 }
 
@@ -236,6 +327,23 @@ int HttpServer::run() {
 	}
 
 	return 0;
+}
+
+std::string HttpServer::file(std::wstring _FileName) {
+	std::string file_text, line;
+
+	std::ifstream file{ _FileName };
+
+	if (!file.is_open()) {
+		clog::l().warn(__FUNCTION__"() could not open the file '%s'", _FileName.c_str());
+	}
+	else {
+		while (std::getline(file, line)) {
+			file_text.append(line);
+		}
+	}
+
+	return file_text;
 }
 
 // Request class
@@ -257,12 +365,11 @@ Response::Response(const char* _Text) {
 	data = _Text;
 }
 
-Response::Response(const std::ofstream& _File) {
-	fill_std_response();
-}
-
 Response::Response(const std::string& _Text) {
 	fill_std_response();
+
+	headers["Content-Length"] = std::to_string(_Text.length());
+	data = _Text;
 }
 
 Response::Response(const std::string& _Text, HTTP::Status _Status) {
@@ -284,22 +391,25 @@ std::string Response::make_src() {
 	std::string newline = "\r\n";
 	constexpr const char* space = " ";
 
-	_Src.append(protocol_version + space);
-
-	auto& status_map = HTTP::StatusMap;
-
-	if (status_map.find(status) == status_map.end()) {
-		_Src.append(status_map[HTTP::Status::Imateapot] + newline);
-	}
-	else {
-		_Src.append(status_map[status] + newline);
-	}
+	_Src.append(protocol_version + space)
+		.append(HTTP::str_status(status) + newline);
 
 	for (auto& header : headers) {
 		_Src.append(header.first + ": " + header.second + newline);
 	}
 
 	return _Src.append(newline + data + newline + newline);
+}
+
+std::string HTTP::str_status(HTTP::Status _Status) {
+	auto& status_map = HTTP::StatusMap;
+
+	if (status_map.find(_Status) == status_map.end()) {
+		return status_map[HTTP::Status::Imateapot];
+	}
+	else {
+		return status_map[_Status];
+	}
 }
 
 std::map<HTTP::Status, std::string> HTTP::StatusMap = std::map<HTTP::Status, std::string>({
@@ -376,4 +486,6 @@ std::map<HTTP::Status, std::string> HTTP::StatusMap = std::map<HTTP::Status, std
 	{ HTTP::Status::ATimeoutOccurred, "524 A Timeout Occurred" },
 	{ HTTP::Status::SSLHandshakeFailed, "525 SSL Handshake Failed" },
 	{ HTTP::Status::InvalidSSLCertificate, "526 Invalid SSL Certificate" }
-	});
+});
+
+#define DELETE (0x00010000L)

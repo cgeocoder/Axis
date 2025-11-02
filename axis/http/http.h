@@ -114,6 +114,8 @@ public:
 	};
 
 	static std::map<HTTP::Status, std::string> StatusMap;
+
+	static std::string str_status(HTTP::Status _Status);
 };
 
 

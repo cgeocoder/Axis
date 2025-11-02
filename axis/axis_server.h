@@ -15,6 +15,8 @@
 #include <map>
 #include <thread>
 #include <mutex>
+#include <initializer_list>
+#include <set>
 
 class HttpServer;
 
@@ -47,7 +49,7 @@ public:
 
 	Response(const char* _Text);
 
-	Response(const std::ofstream& _File);
+	Response(const std::ifstream& _File);
 	Response(const std::string& _Text);
 	Response(const std::string& _Text, HTTP::Status _Status);
 };
@@ -58,7 +60,7 @@ typedef Response(*RefCallbackAdv)(Request&, const std::vector<std::string>&);
 class ClientInfo {
 public:
 	std::thread* thread;
-	SOCKET socket;
+	SOCKET* socket;
 };
 
 class PathMask {
@@ -78,11 +80,15 @@ private:
 	std::map<std::string, RefCallback> m_PathMap;
 	std::map<std::string, RefCallbackAdv> m_PathMapAdv;
 	RefCallbackAdv m_NotFoundCallback;
+	RefCallback m_MethodNotAllowedCallback;
 
 	std::string m_CriticalError;
 	bool m_Run;
 
-	std::vector<ClientInfo> m_Clients;
+	size_t m_MaxClients = 10, m_ClientCounter = 0;
+	ClientInfo* m_Clients[10];
+
+	std::set<HTTP::Method> m_AllowMethods;
 
 public:
 	HttpServer(const std::string& _IP, unsigned short _Port);
@@ -91,20 +97,24 @@ public:
 
 	void operator ()(const std::string& _Path, const RefCallbackAdv& _Callback);
 
-	void if_not_found(const RefCallbackAdv& _Callback);
+	void set_not_found_callback(RefCallbackAdv& _Callback);
+	void set_method_not_allowed_callback(RefCallback& _Callback);
+
+	bool set_allow_methods(const std::initializer_list<HTTP::Method>& _MehodList);
+
+	static std::string file(std::wstring _FileName);
 
 	int run();
 
 private:
 	void accept();
-	void dispatcher(SOCKET _ClientSocket);
+	void dispatcher(SOCKET* _ClientSocket);
 
 	Request receive(SOCKET _ClientSocket);
 	bool make_response(SOCKET _ClientSocket, Response& _Response);
 
 	bool init_server(const std::string& _IP, unsigned short _Port);
 
-	Response default_not_fount_callback(Request& r);
 };
 
 
