@@ -80,7 +80,7 @@ namespace clog {
         va_list args;
         va_start(args, str.c_str());
 
-        char log_title[127] = { 0 };
+        char log_title[256] = { 0 };
 
         sprintf(log_title,
             "%s %sERROR%s: %s\n",
@@ -104,7 +104,7 @@ namespace clog {
         va_list args;
         va_start(args, str.c_str());
 
-        wchar_t log_title[127] = { 0 };
+        wchar_t log_title[256] = { 0 };
 
         swprintf(log_title,
             L"%S %SERROR%S: %ws\n",
@@ -127,7 +127,7 @@ namespace clog {
         va_list args;
         va_start(args, str.c_str());
 
-        char log_title[127] = { 0 };
+        char log_title[256] = { 0 };
 
         sprintf(log_title,
             "%s %sINFO%s: %s\n",
@@ -150,7 +150,7 @@ namespace clog {
         va_list args;
         va_start(args, str.c_str());
 
-        wchar_t log_title[127] = { 0 };
+        wchar_t log_title[256] = { 0 };
 
         swprintf(log_title,
             L"%S %SINFO%S: %ws\n",
@@ -173,7 +173,7 @@ namespace clog {
         va_list args;
         va_start(args, str.c_str());
 
-        char log_title[127] = { 0 };
+        char log_title[256] = { 0 };
 
         sprintf(log_title,
             "%s %sWARN%s: %s\n",
@@ -196,7 +196,7 @@ namespace clog {
         va_list args;
         va_start(args, str.c_str());
 
-        wchar_t log_title[127] = { 0 };
+        wchar_t log_title[256] = { 0 };
 
         swprintf(log_title,
             L"%S %SWARN%S: %ws\n",

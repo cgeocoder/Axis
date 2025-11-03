@@ -19,6 +19,8 @@
 #include <set>
 
 namespace axis {
+	
+	using key_val = std::pair<std::string, std::string>;
 
 	class AxisServer;
 
@@ -26,7 +28,7 @@ namespace axis {
 	public:
 		Request(const std::string& _RawText);
 
-		HTTP::Method method;
+		Method method;
 		std::string protocol_version;
 		std::string path;
 		std::map<std::string, std::string> headers;
@@ -45,20 +47,20 @@ namespace axis {
 
 	public:
 		std::string protocol_version;
-		HTTP::Status status;
+		Status status;
 		std::string data;
 		std::map<std::string, std::string> headers;
 
 		Response(const char* _Text);
 
 		Response(const std::string& _Text);
-		Response(const std::string& _Text, HTTP::Status _Status);
+		Response(const std::string& _Text, Status _Status);
 	};
 
 	typedef Response(*RefCallback)(Request&);
 	typedef Response(*RefCallbackAdv)(Request&, const std::vector<std::string>&);
 
-	class ClientInfo {
+	class ClientData {
 	public:
 		std::thread* thread;
 		SOCKET* socket;
@@ -67,6 +69,16 @@ namespace axis {
 	class PathMask {
 	public:
 		static inline bool mask(const std::string& _Path) { return true; }
+	};
+	
+	struct Callback {
+		RefCallback f = nullptr;
+		std::set<Method> methods;
+	};
+
+	struct CallbackAdv {
+		RefCallbackAdv f = nullptr;
+		std::set<Method> methods;
 	};
 
 	class AxisServer {
@@ -78,8 +90,8 @@ namespace axis {
 		SOCKADDR_IN m_SockAddrIn;
 
 		std::mutex m_DataMutex;
-		std::map<std::string, RefCallback> m_PathMap;
-		std::map<std::string, RefCallbackAdv> m_PathMapAdv;
+		std::map<std::string, Callback> m_PathMap;
+		std::map<std::string, CallbackAdv> m_PathMapAdv;
 		RefCallbackAdv m_NotFoundCallback;
 		RefCallback m_MethodNotAllowedCallback;
 
@@ -87,23 +99,40 @@ namespace axis {
 		bool m_Run;
 
 		size_t m_MaxClients = 10, m_ClientCounter = 0;
-		ClientInfo* m_Clients[10];
+		ClientData* m_Clients[10];
 
-		std::set<HTTP::Method> m_AllowMethods;
+		std::set<Method> m_AllowMethods;
+
+		static std::initializer_list<Method> m_AllMethods;
 
 	public:
 		AxisServer(const std::string& _IP, unsigned short _Port);
 
-		void operator ()(const std::string& _Path, const RefCallback& _Callback);
+		void operator ()(
+			const std::string& _Path, 
+			const RefCallback& _Callback
+		);
 
-		void operator ()(const std::string& _Path, const RefCallbackAdv& _Callback);
+		void operator ()(
+			const std::string& _Path, 
+			const std::initializer_list<Method>& _Methods,
+			const RefCallback& _Callback
+		);
+
+		void operator ()(
+			const std::string& _Path, 
+			const RefCallbackAdv& _Callback
+		);
+
+		void operator ()(
+			const std::string& _Path,
+			const std::initializer_list<Method>& _Methods,
+			const RefCallbackAdv& _Callback
+		);
 
 		void set_not_found_callback(RefCallbackAdv& _Callback);
 		void set_method_not_allowed_callback(RefCallback& _Callback);
-
-		bool set_allow_methods(const std::initializer_list<HTTP::Method>& _MehodList);
-
-		// static std::vector<std::pair<std::string, std::string>> parse_user_data();
+		bool set_allow_methods(const std::initializer_list<Method>& _MehodList);
 
 		int run();
 
@@ -119,7 +148,7 @@ namespace axis {
 
 	Response redirect_to(const std::string& _To);
 	Response send_file(const std::string& _FileName);
-	std::vector<std::pair<std::string, std::string>> parse_parameter(const std::string& _ParametersRaw);
+	std::vector<key_val> parse_key_value_data(const std::string& _RawData);
 
 }
 

@@ -16,7 +16,7 @@ namespace axis {
 		clog::Log& l = clog::l();
 
 		if (!init_server(_IP, _Port)) {
-			l.err(__FUNCTION__ "(): init_server() failed: " + m_CriticalError);
+			l.err(__FUNCTION__ "(): init_server() failed: %s", m_CriticalError.c_str());
 			m_Run = false;
 
 			return;
@@ -24,11 +24,11 @@ namespace axis {
 	}
 
 	Response default_not_fount_callback(Request& r, const std::vector<std::string>& p) {
-		return { "Not Found", HTTP::Status::NotFound };
+		return { "Not Found", NotFound };
 	}
 
 	Response default_method_not_allowed_callback(Request& r) {
-		return { "Method not allowed", HTTP::Status::MethodNotAllowed };
+		return { "Method not allowed", MethodNotAllowed };
 	}
 
 	bool AxisServer::init_server(const std::string& _IP, unsigned short _Port) {
@@ -61,24 +61,14 @@ namespace axis {
 		m_NotFoundCallback = default_not_fount_callback;
 		m_MethodNotAllowedCallback = default_method_not_allowed_callback;
 
-		m_AllowMethods = {
-			HTTP::Method::GET,
-			HTTP::Method::HEAD,
-			HTTP::Method::POST,
-			HTTP::Method::PUT,
-			HTTP::Method::DELETE,
-			HTTP::Method::CONNECT,
-			HTTP::Method::OPTIONS,
-			HTTP::Method::TRACE,
-			HTTP::Method::PATCH
-		};
+		m_AllowMethods = m_AllowMethods;
 
 		return true;
 	}
 
-	bool AxisServer::set_allow_methods(const std::initializer_list<HTTP::Method>& _MehodList) {
+	bool AxisServer::set_allow_methods(const std::initializer_list<Method>& _MehodList) {
 		for (auto& method : _MehodList) {
-			if (method < HTTP::Method::GET || method > HTTP::Method::PATCH)
+			if (method < GET || method > PATCH)
 				return false;
 		}
 
@@ -89,19 +79,63 @@ namespace axis {
 	}
 
 	void AxisServer::operator ()(const std::string& _Path, const RefCallback& _Callback) {
-		if (m_PathMap.find(_Path) != m_PathMap.end()) {
-			std::cout << "Warning: redefinition when accessing '" << _Path << "'\n";
+		(void)(*this)(_Path, m_AllMethods, _Callback);
+	}
+
+	void AxisServer::operator ()(const std::string& _Path, const std::initializer_list<Method>& _Methods, const RefCallback& _Callback) {
+		clog::Log& l = clog::l();
+
+		if (_Callback == nullptr) {
+			l.err(" callback function for '%s' is nullptr", _Path.c_str());
+			return;
 		}
 
-		m_PathMap[_Path] = _Callback;
+		if (m_PathMap.find(_Path) != m_PathMap.end()) {
+			l.warn("redefinition when accessing: path='%s'", _Path.c_str());
+		}
+
+		if (_Methods.size() == 0) {
+			l.warn("allowed method list for '%s' is empty. Set default (all allow) list", _Path.c_str());
+		}
+
+		for (Method method : _Methods) {
+			if (method < GET || method > PATCH) {
+				l.warn("using unknoun method (not from <enum axis::Method>): method=%d", (int)method);
+			}
+		}
+
+		m_PathMap[_Path].methods = _Methods;
+		m_PathMap[_Path].f = _Callback;
 	}
 
 	void AxisServer::operator ()(const std::string& _Path, const RefCallbackAdv& _Callback) {
-		if (m_PathMapAdv.find(_Path) != m_PathMapAdv.end()) {
-			std::cout << "Warning: redefinition when accessing '" << _Path << "'\n";
+		(void)(*this)(_Path, m_AllMethods, _Callback);
+	}
+
+	void AxisServer::operator ()(const std::string& _Path, const std::initializer_list<Method>& _Methods, const RefCallbackAdv& _Callback) {
+		clog::Log& l = clog::l();
+
+		if (_Callback == nullptr) {
+			l.err(" callback function for '%s' is nullptr", _Path.c_str());
+			return;
 		}
 
-		m_PathMapAdv[_Path] = _Callback;
+		if (m_PathMap.find(_Path) != m_PathMap.end()) {
+			l.warn("redefinition when accessing: path='%s'", _Path.c_str());
+		}
+
+		if (_Methods.size() == 0) {
+			l.warn("allowed method list for '%s' is empty. Set default (all allow) list", _Path.c_str());
+		}
+
+		for (Method method : _Methods) {
+			if (method < GET || method > PATCH) {
+				l.warn("using unknoun method (not from <enum axis::Method>): method=%d", (int)method);
+			}
+		}
+
+		m_PathMapAdv[_Path].methods = _Methods;
+		m_PathMapAdv[_Path].f = _Callback;
 	}
 
 	void AxisServer::set_not_found_callback(RefCallbackAdv& _Callback) {
@@ -124,8 +158,8 @@ namespace axis {
 		else {
 			l.info(__FUNCTION__ "(): [s: %llu] accept(): client connected", *new_client);
 
-			auto create_client_thread = [&]() -> ClientInfo* {
-				return new ClientInfo{
+			auto create_client_thread = [&]() -> ClientData* {
+				return new ClientData{
 					new std::thread{ std::thread(&AxisServer::dispatcher, this, new_client) },
 					new_client
 				};
@@ -149,6 +183,7 @@ namespace axis {
 					Response("<h1>The server cannot process your request because the maximum number of connections has been exceeded</h1>")
 				);
 				closesocket(*new_client);
+				delete new_client;
 			}
 			else {
 				m_Clients[m_ClientCounter++] = create_client_thread();
@@ -159,9 +194,13 @@ namespace axis {
 	void AxisServer::dispatcher(SOCKET* _ClientSocket) {
 		clog::Log& l = clog::l();
 
-		l.info(__FUNCTION__ "(): [s: %llu] start", *_ClientSocket);
-
 		bool client_run = true;
+
+		auto send_method_not_allowed = [&](Request& r) -> void {
+			if (!make_response(*_ClientSocket, m_MethodNotAllowedCallback(r))) {
+				l.err(__FUNCTION__ "(): [s: %llu] make_response() failed", *_ClientSocket);
+			}
+		};
 
 		while (client_run) {
 			Request req = receive(*_ClientSocket);
@@ -169,9 +208,7 @@ namespace axis {
 			if (m_AllowMethods.find(req.method) == m_AllowMethods.end()) {
 				m_DataMutex.lock();
 
-				if (!make_response(*_ClientSocket, m_MethodNotAllowedCallback(req))) {
-					l.err(__FUNCTION__ "(): [s: %llu] make_response() failed", *_ClientSocket);
-				}
+				send_method_not_allowed(req);
 
 				m_DataMutex.unlock();
 			}
@@ -189,7 +226,14 @@ namespace axis {
 				Response response;
 
 				if (m_PathMap.find(req.path) != m_PathMap.end()) {
-					response = m_PathMap[req.path](req);
+					Callback cb = m_PathMap[req.path];
+
+					if ((!cb.methods.empty()) && (cb.methods.find(req.method) == cb.methods.end())) {
+						send_method_not_allowed(req);
+					}
+					else {
+						response = cb.f(req);
+					}
 				}
 				else {
 					response = Response("Not found");
@@ -208,8 +252,6 @@ namespace axis {
 				m_DataMutex.unlock();
 			}
 		}
-
-		l.info(__FUNCTION__ "(): [s: %llu] end. Client disconnected", *_ClientSocket);
 
 		::closesocket(*_ClientSocket);
 		*_ClientSocket = 0;
@@ -273,11 +315,11 @@ namespace axis {
 
 		for (size_t i = 0; i < 9; ++i) {
 			if (str_method == methods[i]) {
-				_Result.method = (HTTP::Method)(i + 1);
+				_Result.method = (Method)(i + 1);
 			}
 		}
 
-		if (_Result.method == HTTP::Method::INVALID) {
+		if (_Result.method == INVALID_METHOD) {
 			l.err(__FUNCTION__"(): [s: %llu] invalid HTTP method. Close socket", _ClientSocket);
 			return Request("");
 		}
@@ -319,6 +361,9 @@ namespace axis {
 	}
 
 	int AxisServer::run() {
+		if (!m_Run)
+			return -1;
+
 		clog::Log& l = clog::l();
 		l.info(__FUNCTION__ "(): server start at %s:%d", m_IP.c_str(), (int)m_Port);
 
@@ -348,21 +393,21 @@ namespace axis {
 
 	Response redirect_to(const std::string& _To) {
 		Response response("");
-		response.status = HTTP::Status::MovedPermanently;
+		response.status = MovedPermanently;
 		response.protocol_version = "HTTP/1.1";
 		response.headers["Location"] = _To;
 
 		return response;
 	}
 
-	std::vector<std::pair<std::string, std::string>> parse_parameter(const std::string& _ParametersRaw) {
+	std::vector<std::pair<std::string, std::string>> parse_key_value_data(const std::string& _RawData) {
 		std::vector<std::pair<std::string, std::string>> result;
 
 		size_t last_ampersand = -1,
 			ampersand = -1;
 
-		while ((ampersand = _ParametersRaw.find('&', ampersand + 1)) != std::string::npos) {
-			std::string param = _ParametersRaw.substr(last_ampersand + 1, ampersand - last_ampersand - 1);
+		while ((ampersand = _RawData.find('&', ampersand + 1)) != std::string::npos) {
+			std::string param = _RawData.substr(last_ampersand + 1, ampersand - last_ampersand - 1);
 
 			size_t assign = param.find('=');
 
@@ -374,7 +419,7 @@ namespace axis {
 			last_ampersand = ampersand;
 		}
 
-		std::string param = _ParametersRaw.substr(_ParametersRaw.find_last_of('&') + 1);
+		std::string param = _RawData.substr(_RawData.find_last_of('&') + 1);
 		size_t assign = param.find('=');
 
 		result.push_back({
@@ -389,7 +434,7 @@ namespace axis {
 
 	Request::Request(const std::string& _RawText)
 		: raw_text{ _RawText },
-		method{ HTTP::Method::INVALID } {}
+		method{ Method::INVALID_METHOD } {}
 
 	// Response class
 
@@ -411,7 +456,7 @@ namespace axis {
 		data = _Text;
 	}
 
-	Response::Response(const std::string& _Text, HTTP::Status _Status) {
+	Response::Response(const std::string& _Text, Status _Status) {
 		fill_std_response();
 
 		status = _Status;
@@ -420,7 +465,7 @@ namespace axis {
 	}
 
 	void Response::fill_std_response() {
-		status = HTTP::Status::OK;
+		status = OK;
 		protocol_version = "HTTP/1.1";
 
 		headers["Server"] = "Asix";
@@ -444,91 +489,93 @@ namespace axis {
 		return _Src.append(newline + data + newline + newline);
 	}
 
-	std::string HTTP::str_status(HTTP::Status _Status) {
+	std::string HTTP::str_status(Status _Status) {
 		auto& status_map = HTTP::StatusMap;
 
 		if (status_map.find(_Status) == status_map.end()) {
-			return status_map[HTTP::Status::Imateapot];
+			return status_map[Imateapot];
 		}
 		else {
 			return status_map[_Status];
 		}
 	}
 
-	std::map<HTTP::Status, std::string> HTTP::StatusMap = std::map<HTTP::Status, std::string>({
-		{ HTTP::Status::Continue, "100 Continue" },
-		{ HTTP::Status::SwitchingProtocols, "101 Switching Protocols" },
-		{ HTTP::Status::Processing, "102 Processing" },
-		{ HTTP::Status::EarlyHints, "103 Early Hints" },
-		{ HTTP::Status::OK, "200 OK" },
-		{ HTTP::Status::Created, "201 Created" },
-		{ HTTP::Status::Accepted, "202 Accepted" },
-		{ HTTP::Status::Non_AuthoritativeInformation, "203 Non-Authoritative Information" },
-		{ HTTP::Status::NoContent, "204 No Content" },
-		{ HTTP::Status::ResetContent, "205 Reset Content" },
-		{ HTTP::Status::PartialContent, "206 Partial Content" },
-		{ HTTP::Status::Multi_Status, "207 Multi-Status" },
-		{ HTTP::Status::AlreadyReported, "208 Already Reported" },
-		{ HTTP::Status::IMUsed, "226 IM Used" },
-		{ HTTP::Status::MultipleChoices, "300 Multiple Choices" },
-		{ HTTP::Status::MovedPermanently, "301 Moved Permanently" },
-		{ HTTP::Status::Found, "302 Found" },
-		{ HTTP::Status::SeeOther, "303 See Other" },
-		{ HTTP::Status::NotModified, "304 Not Modified" },
-		{ HTTP::Status::UseProxy, "305 Use Proxy" },
-		{ HTTP::Status::TemporaryRedirect, "307 Temporary Redirect" },
-		{ HTTP::Status::PermanentRedirect, "308 Permanent Redirect" },
-		{ HTTP::Status::BadRequest, "400 Bad Request" },
-		{ HTTP::Status::Unauthorized, "401 Unauthorized" },
-		{ HTTP::Status::PaymentRequired, "402 Payment Required" },
-		{ HTTP::Status::Forbidden, "403 Forbidden" },
-		{ HTTP::Status::NotFound, "404 Not Found" },
-		{ HTTP::Status::MethodNotAllowed, "405 Method Not Allowed" },
-		{ HTTP::Status::NotAcceptable, "406 Not Acceptable" },
-		{ HTTP::Status::ProxyAuthenticationRequired, "407 Proxy Authentication Required" },
-		{ HTTP::Status::RequestTimeout, "408 Request Timeout" },
-		{ HTTP::Status::Conflict, "409 Conflict" },
-		{ HTTP::Status::Gone, "410 Gone" },
-		{ HTTP::Status::LengthRequired, "411 Length Required" },
-		{ HTTP::Status::PreconditionFailed, "412 Precondition Failed" },
-		{ HTTP::Status::PayloadTooLarge, "413 Payload Too Large" },
-		{ HTTP::Status::URITooLong, "414 URI Too Long" },
-		{ HTTP::Status::UnsupportedMediaType, "415 Unsupported Media Type" },
-		{ HTTP::Status::RangeNotSatisfiable, "416 Range Not Satisfiable" },
-		{ HTTP::Status::ExpectationFailed, "417 Expectation Failed" },
-		{ HTTP::Status::Imateapot, "418 I'm a teapot" },
-		{ HTTP::Status::AuthenticationTimeout, "419 Authentication Timeout" },
-		{ HTTP::Status::MisdirectedRequest, "421 Misdirected Request" },
-		{ HTTP::Status::UnprocessableEntity, "422 Unprocessable Entity" },
-		{ HTTP::Status::Locked, "423 Locked" },
-		{ HTTP::Status::FailedDependency, "424 Failed Dependency" },
-		{ HTTP::Status::TooEarly, "425 Too Early" },
-		{ HTTP::Status::UpgradeRequired, "426 Upgrade Required" },
-		{ HTTP::Status::PreconditionRequired, "428 Precondition Required" },
-		{ HTTP::Status::TooManyRequests, "429 Too Many Requests" },
-		{ HTTP::Status::RequestHeaderFieldsTooLarge, "431 Request Header Fields Too Large" },
-		{ HTTP::Status::RetryWith, "449 Retry With" },
-		{ HTTP::Status::UnavailableForLegalReasons, "451 Unavailable For Legal Reasons" },
-		{ HTTP::Status::ClientClosedRequest, "499 Client Closed Request" },
-		{ HTTP::Status::InternalServerError, "500 Internal Server Error" },
-		{ HTTP::Status::NotImplemented, "501 Not Implemented" },
-		{ HTTP::Status::BadGateway, "502 Bad Gateway" },
-		{ HTTP::Status::ServiceUnavailable, "503 Service Unavailable" },
-		{ HTTP::Status::GatewayTimeout, "504 Gateway Timeout" },
-		{ HTTP::Status::HTTPVersionNotSupported, "505 HTTP Version Not Supported" },
-		{ HTTP::Status::VariantAlsoNegotiates, "506 Variant Also Negotiates" },
-		{ HTTP::Status::InsufficientStorage, "507 Insufficient Storage" },
-		{ HTTP::Status::LoopDetected, "508 Loop Detected" },
-		{ HTTP::Status::BandwidthLimitExceeded, "509 Bandwidth Limit Exceeded" },
-		{ HTTP::Status::NotExtended, "510 Not Extended" },
-		{ HTTP::Status::NetworkAuthenticationRequired, "511 Network Authentication Required" },
-		{ HTTP::Status::UnknownError, "520 Unknown Error" },
-		{ HTTP::Status::WebServerIsDown, "521 Web Server Is Down" },
-		{ HTTP::Status::ConnectionTimedOut, "522 Connection Timed Out" },
-		{ HTTP::Status::OriginIsUnreachable, "523 Origin Is Unreachable" },
-		{ HTTP::Status::ATimeoutOccurred, "524 A Timeout Occurred" },
-		{ HTTP::Status::SSLHandshakeFailed, "525 SSL Handshake Failed" },
-		{ HTTP::Status::InvalidSSLCertificate, "526 Invalid SSL Certificate" }
+	std::initializer_list<Method> AxisServer::m_AllMethods = { GET, HEAD, POST, PUT, DELETE, CONNECT, OPTIONS, TRACE, PATCH };
+
+	std::map<Status, std::string> HTTP::StatusMap = std::map<Status, std::string>({
+		{ Continue, "100 Continue" },
+		{ SwitchingProtocols, "101 Switching Protocols" },
+		{ Processing, "102 Processing" },
+		{ EarlyHints, "103 Early Hints" },
+		{ OK, "200 OK" },
+		{ Created, "201 Created" },
+		{ Accepted, "202 Accepted" },
+		{ Non_AuthoritativeInformation, "203 Non-Authoritative Information" },
+		{ NoContent, "204 No Content" },
+		{ ResetContent, "205 Reset Content" },
+		{ PartialContent, "206 Partial Content" },
+		{ Multi_Status, "207 Multi-Status" },
+		{ AlreadyReported, "208 Already Reported" },
+		{ IMUsed, "226 IM Used" },
+		{ MultipleChoices, "300 Multiple Choices" },
+		{ MovedPermanently, "301 Moved Permanently" },
+		{ Found, "302 Found" },
+		{ SeeOther, "303 See Other" },
+		{ NotModified, "304 Not Modified" },
+		{ UseProxy, "305 Use Proxy" },
+		{ TemporaryRedirect, "307 Temporary Redirect" },
+		{ PermanentRedirect, "308 Permanent Redirect" },
+		{ BadRequest, "400 Bad Request" },
+		{ Unauthorized, "401 Unauthorized" },
+		{ PaymentRequired, "402 Payment Required" },
+		{ Forbidden, "403 Forbidden" },
+		{ NotFound, "404 Not Found" },
+		{ MethodNotAllowed, "405 Method Not Allowed" },
+		{ NotAcceptable, "406 Not Acceptable" },
+		{ ProxyAuthenticationRequired, "407 Proxy Authentication Required" },
+		{ RequestTimeout, "408 Request Timeout" },
+		{ Conflict, "409 Conflict" },
+		{ Gone, "410 Gone" },
+		{ LengthRequired, "411 Length Required" },
+		{ PreconditionFailed, "412 Precondition Failed" },
+		{ PayloadTooLarge, "413 Payload Too Large" },
+		{ URITooLong, "414 URI Too Long" },
+		{ UnsupportedMediaType, "415 Unsupported Media Type" },
+		{ RangeNotSatisfiable, "416 Range Not Satisfiable" },
+		{ ExpectationFailed, "417 Expectation Failed" },
+		{ Imateapot, "418 I'm a teapot" },
+		{ AuthenticationTimeout, "419 Authentication Timeout" },
+		{ MisdirectedRequest, "421 Misdirected Request" },
+		{ UnprocessableEntity, "422 Unprocessable Entity" },
+		{ Locked, "423 Locked" },
+		{ FailedDependency, "424 Failed Dependency" },
+		{ TooEarly, "425 Too Early" },
+		{ UpgradeRequired, "426 Upgrade Required" },
+		{ PreconditionRequired, "428 Precondition Required" },
+		{ TooManyRequests, "429 Too Many Requests" },
+		{ RequestHeaderFieldsTooLarge, "431 Request Header Fields Too Large" },
+		{ RetryWith, "449 Retry With" },
+		{ UnavailableForLegalReasons, "451 Unavailable For Legal Reasons" },
+		{ ClientClosedRequest, "499 Client Closed Request" },
+		{ InternalServerError, "500 Internal Server Error" },
+		{ NotImplemented, "501 Not Implemented" },
+		{ BadGateway, "502 Bad Gateway" },
+		{ ServiceUnavailable, "503 Service Unavailable" },
+		{ GatewayTimeout, "504 Gateway Timeout" },
+		{ HTTPVersionNotSupported, "505 HTTP Version Not Supported" },
+		{ VariantAlsoNegotiates, "506 Variant Also Negotiates" },
+		{ InsufficientStorage, "507 Insufficient Storage" },
+		{ LoopDetected, "508 Loop Detected" },
+		{ BandwidthLimitExceeded, "509 Bandwidth Limit Exceeded" },
+		{ NotExtended, "510 Not Extended" },
+		{ NetworkAuthenticationRequired, "511 Network Authentication Required" },
+		{ UnknownError, "520 Unknown Error" },
+		{ WebServerIsDown, "521 Web Server Is Down" },
+		{ ConnectionTimedOut, "522 Connection Timed Out" },
+		{ OriginIsUnreachable, "523 Origin Is Unreachable" },
+		{ ATimeoutOccurred, "524 A Timeout Occurred" },
+		{ SSLHandshakeFailed, "525 SSL Handshake Failed" },
+		{ InvalidSSLCertificate, "526 Invalid SSL Certificate" }
 	});
 }
 
