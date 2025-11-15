@@ -3,6 +3,7 @@
 #include <array>
 #include <fstream>
 
+#include "request.h"
 #include "axis_server.h"
 #include "logger/log.h"
 
@@ -23,11 +24,11 @@ namespace axis {
 		}
 	}
 
-	Response default_not_fount_callback(Request& r, const std::vector<std::string>& p) {
+	static Response default_not_fount_callback(Request& r) {
 		return { "Not Found", NotFound };
 	}
 
-	Response default_method_not_allowed_callback(Request& r) {
+	static Response default_method_not_allowed_callback(Request& r) {
 		return { "Method not allowed", MethodNotAllowed };
 	}
 
@@ -61,19 +62,34 @@ namespace axis {
 		m_NotFoundCallback = default_not_fount_callback;
 		m_MethodNotAllowedCallback = default_method_not_allowed_callback;
 
-		m_AllowMethods = m_AllowMethods;
-
 		return true;
 	}
 
-	bool AxisServer::set_allow_methods(const std::initializer_list<Method>& _MehodList) {
-		for (auto& method : _MehodList) {
-			if (method < GET || method > PATCH)
-				return false;
+	static bool is_template_path(const std::string& _Path) {
+		if (_Path.find("/<") == std::string::npos) {
+			return false;
 		}
 
-		m_AllowMethods.clear();
-		m_AllowMethods = _MehodList;
+		size_t path_length = _Path.length();
+		int br_count = 0;
+
+		for (size_t i = 0; i < path_length - 1; ++i) {
+			if (_Path.substr(i, 2) == "/<") {
+				if (br_count != 0)
+					return false;
+
+				br_count += 1;
+			}
+			else if (_Path.substr(i, 2) == ">/") {
+				if (br_count != 1)
+					return false;
+
+				br_count -= 1;
+			}
+		}
+
+		if ((br_count == 1) && (_Path[path_length - 1] != '>'))
+			return false;
 
 		return true;
 	}
@@ -104,45 +120,132 @@ namespace axis {
 			}
 		}
 
-		m_PathMap[_Path].methods = _Methods;
-		m_PathMap[_Path].f = _Callback;
+		// template
+		bool a = is_template_path(_Path);
+
+		__debugbreak();
+
+		if (is_template_path(_Path)) {
+			if (m_PathMapTemplates.find(_Path) != m_PathMapTemplates.end()) {
+				l.warn("redefinition for template path when accessing: path='%s'", _Path.c_str());
+			}
+
+			std::vector<std::string> path_temp_sections = div_by_sections(_Path);
+			std::vector<Section> sections;
+
+			for (size_t i = 0; i < path_temp_sections.size(); ++i) {
+				std::string& section = path_temp_sections.at(i);
+
+				if (section.find('<') != std::string::npos) {
+					if (section == "<?>") {
+						if (i != path_temp_sections.size() - 1) {
+							l.warn("the next sections of the path after <?> will be ignored: path='%s'", _Path.c_str());
+							break;
+						}
+					}
+					else if (section.find("<|") != std::string::npos || section.find("|>") != std::string::npos || section.find('/') != std::string::npos) {
+						l.err("the path template is incorrect: section='%s', path='%s'", section.c_str(), _Path.c_str());
+						return;
+					}
+				}
+			}
+
+			m_PathMapTemplates[_Path] = {
+				_Callback, _Methods
+			}; 
+		}
+		else {
+			m_PathMap[_Path] = {
+				_Callback, _Methods
+			};
+		}
 	}
 
-	void AxisServer::operator ()(const std::string& _Path, const RefCallbackAdv& _Callback) {
-		(void)(*this)(_Path, m_AllMethods, _Callback);
+	std::vector<std::string> div_by(const std::string& path, char separator) {
+		std::vector<std::string> sections;
+		size_t div = 0, next_div = 0;
+
+		while ((next_div = path.find(separator, next_div + 1)) != std::string::npos) {
+			sections.push_back(path.substr(div + 1, next_div - div - 1));
+
+			div = next_div;
+		}
+		sections.push_back(path.substr(div + 1, next_div - div - 1));
+
+		return sections;
+	};
+
+	std::vector<std::string> div_by_sections(const std::string& path) {
+		return div_by(path, '/');
 	}
 
-	void AxisServer::operator ()(const std::string& _Path, const std::initializer_list<Method>& _Methods, const RefCallbackAdv& _Callback) {
-		clog::Log& l = clog::l();
+	bool is_mask_of(const std::string& mask, const std::string& path) {
+		std::vector<Section> mask_sections, path_sections;
 
-		if (_Callback == nullptr) {
-			l.err(" callback function for '%s' is nullptr", _Path.c_str());
-			return;
-		}
+		for (auto& section : div_by_sections(path))
+			path_sections.push_back(Section(section));
 
-		if (m_PathMap.find(_Path) != m_PathMap.end()) {
-			l.warn("redefinition when accessing: path='%s'", _Path.c_str());
-		}
+		for (auto& section : div_by_sections(mask))
+			mask_sections.push_back(Section(section));
 
-		if (_Methods.size() == 0) {
-			l.warn("allowed method list for '%s' is empty. Set default (all allow) list", _Path.c_str());
-		}
+		size_t m_sec_size = mask_sections.size(),
+			p_sec_size = path_sections.size();
 
-		for (Method method : _Methods) {
-			if (method < GET || method > PATCH) {
-				l.warn("using unknoun method (not from <enum axis::Method>): method=%d", (int)method);
+		if (m_sec_size > p_sec_size)
+			return false;
+
+		const size_t min_sections_count = min(m_sec_size, p_sec_size);
+
+		for (size_t i = 0; i < min_sections_count; ++i) {
+			Section& m_sec = mask_sections.at(i),
+				&p_sec = path_sections.at(i);
+
+			if (m_sec.type == Section::non_template_section) {
+				if (m_sec.section != p_sec.section)
+					return false;
+			}
+			else if (m_sec.type == Section::template_variants_section) {
+				if (!m_sec.one_of_variants(p_sec.section))
+					return false;
+			}
+			else if (m_sec.type == Section::template_any_section) {
+				return true;
 			}
 		}
 
-		m_PathMapAdv[_Path].methods = _Methods;
-		m_PathMapAdv[_Path].f = _Callback;
+		return true;
 	}
 
-	void AxisServer::set_not_found_callback(RefCallbackAdv& _Callback) {
+	void decode_string(std::string& str) {
+		for (auto& p : HTTP::URLEncodingMap) {
+			size_t pos;
+
+			while ((pos = str.find(p.first)) != std::string::npos) {
+				__debugbreak();
+
+				str = str.substr(0, pos)
+					+ p.second 
+					+ str.substr(pos + p.first.length());
+
+				__debugbreak();
+			}
+		}
+	}
+
+	/*
+	* /section1/<...>	means one non-empty section
+	*
+	* /section1/<a|b>	means /section1/a or /section1/b
+	*
+	* /section1/<?>		means any number of sections
+	*
+	*/
+
+	void AxisServer::set_not_found_callback(RefCallback&& _Callback) {
 		m_NotFoundCallback = _Callback;
 	}
 
-	void AxisServer::set_method_not_allowed_callback(RefCallback& _Callback) {
+	void AxisServer::set_method_not_allowed_callback(RefCallback&& _Callback) {
 		m_MethodNotAllowedCallback = _Callback;
 	}
 
@@ -204,66 +307,91 @@ namespace axis {
 
 		while (client_run) {
 			Request req = receive(*_ClientSocket);
+			decode_string(req.path);
 
-			if (m_AllowMethods.find(req.method) == m_AllowMethods.end()) {
-				m_DataMutex.lock();
+			std::map<std::string, std::string>& req_headers = req.headers;
 
-				send_method_not_allowed(req);
+			if ((req_headers.find("Connection") != req_headers.end()) && (req_headers["Connection"] == "Closed")) {
+				client_run = false;
+			}
 
-				m_DataMutex.unlock();
+			l.info(__FUNCTION__ "(): [s: %llu] required '%s'", *_ClientSocket, req.path.c_str());
+
+			m_DataMutex.lock();
+
+			Response response;
+			Callback callback = find_callback(req.path);
+
+			if (callback.f == nullptr) {
+				response = m_NotFoundCallback(req);
 			}
 			else {
-				auto& req_headers = req.headers;
-
-				if ((req_headers.find("Connection") != req_headers.end()) && (req_headers["Connection"] == "Closed")) {
-					client_run = false;
-				}
-
-				l.info(__FUNCTION__ "(): [s: %llu] required '%s'", *_ClientSocket, req.path.c_str());
-
-				m_DataMutex.lock();
-
-				Response response;
-
-				if (m_PathMap.find(req.path) != m_PathMap.end()) {
-					Callback cb = m_PathMap[req.path];
-
-					if ((!cb.methods.empty()) && (cb.methods.find(req.method) == cb.methods.end())) {
-						send_method_not_allowed(req);
-					}
-					else {
-						response = cb.f(req);
-					}
+				if ((!callback.methods.empty()) && (callback.methods.find(req.method) == callback.methods.end())) {
+					send_method_not_allowed(req);
 				}
 				else {
-					response = Response("Not found");
+					response = callback.f(req);
 				}
-
-				auto& resp_headers = response.headers;
-
-				if ((resp_headers.find("Connection") != resp_headers.end()) && (resp_headers["Connection"] == "Closed")) {
-					client_run = false;
-				}
-
-				if (!make_response(*_ClientSocket, response)) {
-					l.err(__FUNCTION__ "(): [s: %llu] make_response() failed", *_ClientSocket);
-				}
-
-				m_DataMutex.unlock();
 			}
+
+			auto& resp_headers = response.headers;
+
+			if ((resp_headers.find("Connection") != resp_headers.end()) && (resp_headers["Connection"] == "Closed")) {
+				client_run = false;
+			}
+
+			if (!make_response(*_ClientSocket, response)) {
+				l.err(__FUNCTION__ "(): [s: %llu] make_response() failed", *_ClientSocket);
+			}
+
+			m_DataMutex.unlock();
 		}
 
 		::closesocket(*_ClientSocket);
 		*_ClientSocket = 0;
 	}
 
-	bool AxisServer::make_response(SOCKET _ClientSocket, const Response& _Response) {
-		std::string src_response = _Response.make_src();
+	static int axis_send_string(SOCKET _ClientSocket, const std::string& _Str) {
+		int send_result = 0;
+		size_t str_len = _Str.length();
 
-		return !(send(
-			_ClientSocket,
-			src_response.c_str(),
-			src_response.length(), 0) < 0);
+		constexpr unsigned int max_message_len = MAXDWORD32;
+		size_t sections = str_len / (size_t)max_message_len + 1;
+
+		for (size_t i = 0; i < sections; ++i) {
+			std::string section_message = _Str.substr(
+				i * max_message_len,
+				max_message_len
+			);
+
+			send_result = send(
+				_ClientSocket,
+				section_message.c_str(),
+				(int)section_message.length(), 0);
+
+			if (send_result < 0) {
+				return send_result;
+			}
+		}
+
+		return send_result;
+	}
+
+	bool AxisServer::make_response(SOCKET _ClientSocket, const Response& _Response) {
+		return !(axis_send_string(_ClientSocket, _Response.make_src()) < 0);
+	}
+
+	Callback AxisServer::find_callback(std::string& _Path) {
+		for (auto& path_temp : m_PathMapTemplates) {
+			if (is_mask_of(path_temp.first, _Path))
+				return path_temp.second;
+		}
+
+		if (m_PathMap.find(_Path) != m_PathMap.end()) {
+			return m_PathMap[_Path];
+		}
+
+		return Callback{ nullptr };
 	}
 
 	Request AxisServer::receive(SOCKET _ClientSocket) {
@@ -345,7 +473,7 @@ namespace axis {
 
 			char* _data = new char[content_length + 1];
 
-			if (recv(_ClientSocket, _data, content_length * sizeof(char), 0) < 0) {
+			if (recv(_ClientSocket, _data, (int)content_length * sizeof(char), 0) < 0) {
 				l.err(__FUNCTION__"(): recv() failed. Close socket (%llu)", _ClientSocket);
 				return Request("");
 			}
@@ -375,6 +503,32 @@ namespace axis {
 	}
 
 	Response send_file(const std::string& _FileName) {
+		return send_file(_FileName, OK);
+	}
+
+	Response send_file(const std::string& _FileName, Status _StatusCode) {
+		std::string file_text, line;
+
+		std::ifstream file{ _FileName };
+
+		if (!file.is_open()) {
+			clog::l().warn(__FUNCTION__"() could not open the file '%s'", _FileName.c_str());
+		}
+		else {
+			while (std::getline(file, line))
+				file_text.append(line);
+
+			file.close();
+		}
+
+		return Response(file_text, _StatusCode);
+	}
+
+	Response render_template(const std::string& _FileName, std::map<std::string, std::string>& _Data) {
+		return render_template(_FileName, _Data, OK);
+	}
+
+	Response render_template(const std::string& _FileName, std::map<std::string, std::string>& _Data, Status _StatusCode) {
 		std::string file_text, line;
 
 		std::ifstream file{ _FileName };
@@ -384,11 +538,22 @@ namespace axis {
 		}
 		else {
 			while (std::getline(file, line)) {
+				for (auto& pair : _Data) {
+					size_t param_index = line.find('%' + pair.first + '%');
+
+					if (param_index != std::string::npos) {
+						line =
+							line.substr(0, param_index) +
+							pair.second +
+							line.substr(param_index + 2 + pair.first.length());
+					}
+				}
+
 				file_text.append(line);
 			}
 		}
 
-		return Response(file_text);
+		return Response(file_text, _StatusCode);
 	}
 
 	Response redirect_to(const std::string& _To) {
@@ -576,6 +741,102 @@ namespace axis {
 		{ ATimeoutOccurred, "524 A Timeout Occurred" },
 		{ SSLHandshakeFailed, "525 SSL Handshake Failed" },
 		{ InvalidSSLCertificate, "526 Invalid SSL Certificate" }
+	});
+
+	std::map<std::string, std::string> HTTP::URLEncodingMap = std::map<std::string, std::string>({
+		{"%7E", "~"},
+		{"60%", "`"},
+		{"27%", "'"},
+		{"22%", "\""},
+		{"40%", "@"},
+		{"%3F", "?"},
+		{"21%", "!"},
+		{"23%", "#"},
+		{"%B9", "¹"},
+		{"24%", "$"},
+		{"25%", "%"},
+		{"%5E", "^"},
+		{"26%", "&"},
+		{"%2B", "+"},
+		{"%2A", "*"},
+		{"%3A", ":"},
+		{"%2C", ","},
+		{"28%", "("},
+		{"29%", ")"},
+		{"%7B", "{"},
+		{"%7D", "}"},
+		{"%5B", "["},
+		{"%5D", "]"},
+		{"%3C", "<"},
+		{"%3E", ">"},
+		{"%2F", "/"},
+		{"%5C", " "},
+		{"%C0", "À"},
+		{"%E0", "à"},
+		{"%C1", "Á"},
+		{"%E1", "á"},
+		{"%C2", "Â"},
+		{"%E2", "â"},
+		{"%C3", "Ã"},
+		{"%E3", "ã"},
+		{"%C4", "Ä"},
+		{"%E4", "ä"},
+		{"%C5", "Å"},
+		{"%E5", "å"},
+		{"%A8", "¨"},
+		{"%B8", "¸"},
+		{"%C6", "Æ"},
+		{"%E6", "æ"},
+		{"%C7", "Ç"},
+		{"%E7", "ç"},
+		{"%C8", "È"},
+		{"%E8", "è"},
+		{"%C9", "É"},
+		{"%E9", "é"},
+		{"%CA", "Ê"},
+		{"%EA", "ê"},
+		{"%CB", "Ë"},
+		{"%EB", "ë"},
+		{"%CC", "Ì"},
+		{"%EC", "ì"},
+		{"%CD", "Í"},
+		{"%ED", "í"},
+		{"%CE", "Î"},
+		{"%EE", "î"},
+		{"%CF", "Ï"},
+		{"%EF", "ï"},
+		{"%D0", "Ð"},
+		{"%F0", "ð"},
+		{"%D1", "Ñ"},
+		{"%F1", "ñ"},
+		{"%D2", "Ò"},
+		{"%F2", "ò"},
+		{"%D3", "Ó"},
+		{"%F3", "ó"},
+		{"%D4", "Ô"},
+		{"%F4", "ô"},
+		{"%D5", "Õ"},
+		{"%F5", "õ"},
+		{"%D6", "Ö"},
+		{"%F6", "ö"},
+		{"%D7", "×"},
+		{"%F7", "÷"},
+		{"%D8", "Ø"},
+		{"%F8", "ø"},
+		{"%D9", "Ù"},
+		{"%F9", "ù"},
+		{"%DA", "Ú"},
+		{"%FA", "ú"},
+		{"%DB", "Û"},
+		{"%FB", "û"},
+		{"%DC", "Ü"},
+		{"%FC", "ü"},
+		{"%DD", "Ý"},
+		{"%FD", "ý"},
+		{"%DE", "Þ"},
+		{"%FE", "þ"},
+		{"%DF", "ß"},
+		{"%FF", "ÿ"}
 	});
 }
 
