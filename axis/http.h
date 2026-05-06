@@ -3,6 +3,16 @@
 #ifndef __AXIS_HTTP_H__
 #define __AXIS_HTTP_H__
 
+#define VERSION_MAJ "1"
+#define VERSION_MIN "0"
+#define VERSION VERSION_MAJ "." VERSION_MIN
+
+#ifdef _DEBUG
+#define FULL_VERSION "debug#v" VERSION
+#else
+#define FULL_VERSION "release#v" VERSION
+#endif 
+
 #include "response.h"
 
 #include <string>
@@ -11,6 +21,8 @@
 #include <map>
 
 namespace axis {
+
+	// HTTP methods
 	enum Method {
 		INVALID_METHOD,
 		GET,
@@ -24,6 +36,7 @@ namespace axis {
 		PATCH
 	};
 
+	// Server HTTP response statuses
 	enum Status {
 		InvalidStatus,
 		Continue = 100,
@@ -105,6 +118,7 @@ namespace axis {
 		InvalidSSLCertificate = 526
 	};
 
+	// HTTP
 	class HTTP {
 	public:
 		static std::map<Status, std::string> StatusMap;
@@ -114,16 +128,37 @@ namespace axis {
 
 	using key_val = std::pair<std::string, std::string>;
 
+	// Redirects to a link 
+	// @param _To - link
 	Response redirect_to(const std::string& _To);
+
+	// Sends the file
+	// @param _FileName - path to file
 	Response send_file(const std::string& _FileName);
+
+	// Sends the file
+	// @param _FileName - path to file
+	// @param _StatusCode - status
 	Response send_file(const std::string& _FileName, Status _StatusCode);
+
+	// Renders the template file according to the parameters
+	// @param _FileName - path to file
+	// @param _Data - Rendering parameters
 	Response render_template(const std::string& _FileName, std::map<std::string, std::string>& _Data);
+
+	// Renders the template file according to the parameters
+	// @param _FileName - path to file
+	// @param _Data - Rendering parameters
+	// @param _StatusCode - status
 	Response render_template(const std::string& _FileName, std::map<std::string, std::string>& _Data, Status _StatusCode);
-	std::vector<key_val> parse_key_value_data(const std::string& _RawData);
+	
+	
+	// std::vector<key_val> parse_key_value_data(const std::string& _RawData);
+
 	std::vector<std::string> div_by(const std::string& path, char separator);
 	std::vector<std::string> div_by_sections(const std::string& path);
 	bool is_mask_of(const std::string& mask, const std::string& path);
-	void decode_string(std::string& str);
+	// void decode_string(std::string& str);
 
 	class Section {
 	public:

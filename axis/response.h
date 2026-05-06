@@ -14,8 +14,6 @@ namespace axis {
 		friend class AxisServer;
 
 	private:
-		Response();
-
 		void fill_std_response();
 		std::string make_src() const;
 
@@ -25,6 +23,7 @@ namespace axis {
 		std::string data;
 		std::map<std::string, std::string> headers;
 
+		Response();
 		Response(const char* _Text);
 
 		Response(const std::string& _Text);

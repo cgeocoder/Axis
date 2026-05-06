@@ -45,8 +45,8 @@ namespace axis {
 		std::string m_CriticalError;
 		bool m_Run;
 
-		size_t m_MaxClients = 10, m_ClientCounter = 0;
-		ClientData* m_Clients[10];
+		unsigned int m_MaxClients = 10, m_ClientCounter = 0;
+		ClientData** m_Clients;
 
 		static std::initializer_list<Method> m_AllMethods;
 
@@ -64,6 +64,7 @@ namespace axis {
 			const RefCallback& _Callback
 		);
 
+		void set_max_clients(unsigned int _MaxClients);
 		void set_not_found_callback(RefCallback&& _Callback);
 		void set_method_not_allowed_callback(RefCallback&& _Callback);
 

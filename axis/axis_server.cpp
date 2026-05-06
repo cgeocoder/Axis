@@ -32,6 +32,10 @@ namespace axis {
 		return { "Method not allowed", MethodNotAllowed };
 	}
 
+	void AxisServer::set_max_clients(unsigned int _MaxClients) {
+		m_MaxClients = _MaxClients;
+	}
+
 	bool AxisServer::init_server(const std::string& _IP, unsigned short _Port) {
 		WSAData wsaData;
 		if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
@@ -120,11 +124,6 @@ namespace axis {
 			}
 		}
 
-		// template
-		bool a = is_template_path(_Path);
-
-		__debugbreak();
-
 		if (is_template_path(_Path)) {
 			if (m_PathMapTemplates.find(_Path) != m_PathMapTemplates.end()) {
 				l.warn("redefinition for template path when accessing: path='%s'", _Path.c_str());
@@ -143,13 +142,19 @@ namespace axis {
 							break;
 						}
 					}
-					else if (section.find("<|") != std::string::npos || section.find("|>") != std::string::npos || section.find('/') != std::string::npos) {
-						l.err("the path template is incorrect: section='%s', path='%s'", section.c_str(), _Path.c_str());
+					else if (section.find("<|") != std::string::npos || section.find("|>") != std::string::npos) {
+						l.err("the path template is incorrect: section='/%s', path='%s'", section.c_str(), _Path.c_str());
 						return;
+					}
+					else if (section.find('|') == std::string::npos) {
+						l.warn("the section will be read as '/%s' instead of '/%s': path='%s'", 
+							section.substr(1, section.length() - 2).c_str(),
+							section.c_str(),
+							_Path.c_str()
+						);
 					}
 				}
 			}
-
 			m_PathMapTemplates[_Path] = {
 				_Callback, _Methods
 			}; 
@@ -221,25 +226,12 @@ namespace axis {
 			size_t pos;
 
 			while ((pos = str.find(p.first)) != std::string::npos) {
-				__debugbreak();
-
 				str = str.substr(0, pos)
 					+ p.second 
 					+ str.substr(pos + p.first.length());
-
-				__debugbreak();
 			}
 		}
 	}
-
-	/*
-	* /section1/<...>	means one non-empty section
-	*
-	* /section1/<a|b>	means /section1/a or /section1/b
-	*
-	* /section1/<?>		means any number of sections
-	*
-	*/
 
 	void AxisServer::set_not_found_callback(RefCallback&& _Callback) {
 		m_NotFoundCallback = _Callback;
@@ -259,7 +251,7 @@ namespace axis {
 			l.err(__FUNCTION__ "(): accept() failed: client could not connect to the server");
 		}
 		else {
-			l.info(__FUNCTION__ "(): [s: %llu] accept(): client connected", *new_client);
+			l.info(__FUNCTION__ "(): [socket=%llu] accept(): client connected", *new_client);
 
 			auto create_client_thread = [&]() -> ClientData* {
 				return new ClientData{
@@ -301,7 +293,7 @@ namespace axis {
 
 		auto send_method_not_allowed = [&](Request& r) -> void {
 			if (!make_response(*_ClientSocket, m_MethodNotAllowedCallback(r))) {
-				l.err(__FUNCTION__ "(): [s: %llu] make_response() failed", *_ClientSocket);
+				l.err(__FUNCTION__ "(): [socket=%llu] make_response() failed", *_ClientSocket);
 			}
 		};
 
@@ -315,7 +307,7 @@ namespace axis {
 				client_run = false;
 			}
 
-			l.info(__FUNCTION__ "(): [s: %llu] required '%s'", *_ClientSocket, req.path.c_str());
+			l.info(__FUNCTION__ "(): [socket=%llu] required '%s'", *_ClientSocket, req.path.c_str());
 
 			m_DataMutex.lock();
 
@@ -341,7 +333,7 @@ namespace axis {
 			}
 
 			if (!make_response(*_ClientSocket, response)) {
-				l.err(__FUNCTION__ "(): [s: %llu] make_response() failed", *_ClientSocket);
+				l.err(__FUNCTION__ "(): [socket=%llu] make_response() failed", *_ClientSocket);
 			}
 
 			m_DataMutex.unlock();
@@ -433,7 +425,7 @@ namespace axis {
 		};
 
 		if ((spaces[0] == std::string::npos) || (spaces[1] == std::string::npos)) {
-			l.err(__FUNCTION__"(): [s: %llu] invalid HTTP first line. Close socket", _ClientSocket);
+			l.err(__FUNCTION__"(): [socket=%llu] invalid HTTP first line. Close socket", _ClientSocket);
 			return Request("");
 		}
 
@@ -448,7 +440,7 @@ namespace axis {
 		}
 
 		if (_Result.method == INVALID_METHOD) {
-			l.err(__FUNCTION__"(): [s: %llu] invalid HTTP method. Close socket", _ClientSocket);
+			l.err(__FUNCTION__"(): [socket=%llu] invalid HTTP method. Close socket", _ClientSocket);
 			return Request("");
 		}
 
@@ -461,7 +453,7 @@ namespace axis {
 			size_t div_seq = line.find(": ");
 
 			if (div_seq == std::string::npos) {
-				l.err(__FUNCTION__"(): [s: %llu] invalid (%llu) header. Close socket", _ClientSocket, i);
+				l.err(__FUNCTION__"(): [socket=%llu] invalid (%llu) header. Close socket", _ClientSocket, i);
 				return Request("");
 			}
 
@@ -489,15 +481,18 @@ namespace axis {
 	}
 
 	int AxisServer::run() {
+		m_Clients = new ClientData*[m_MaxClients];
+
 		if (!m_Run)
 			return -1;
 
-		clog::Log& l = clog::l();
-		l.info(__FUNCTION__ "(): server start at %s:%d", m_IP.c_str(), (int)m_Port);
+		clog::l().info(__FUNCTION__ "(): server (" FULL_VERSION ") start at %s:%d", m_IP.c_str(), (int)m_Port);
 
 		while (m_Run) {
 			accept();
 		}
+
+		delete[] m_Clients;
 
 		return 0;
 	}
